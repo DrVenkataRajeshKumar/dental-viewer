@@ -258,6 +258,7 @@ textarea.inp{resize:vertical;min-height:80px;line-height:1.55;}
 /* Canvas area */
 #canvas-wrap{
   position:relative;flex:1;min-height:0;
+  height:calc(100vh - 58px - 42px);
   background:radial-gradient(ellipse at 50% 40%,#0e1e3a 0%,#060b14 70%);
 }
 #three-canvas{display:block;width:100%!important;height:100%!important;}
@@ -641,9 +642,31 @@ window.addEventListener('load', () => {
 function switchTab(tab) {
   switchPage(tab);
   if (tab === 'viewer') {
-    if (previewBuf) renderScan(previewBuf, fileExt || 'stl', lastMeta);
-    else {
-      document.getElementById('loader-text').textContent = 'Open a scan link or generate one from the Doctor Portal.';
+    if (previewBuf) {
+      // Reset loader UI in case it was previously hidden/errored
+      const loader = document.getElementById('viewer-loader');
+      loader.style.display = 'flex';
+      loader.classList.remove('hidden');
+      document.getElementById('viewer-error').style.display = 'none';
+      document.querySelector('#viewer-loader .loader-ring').style.display = 'block';
+      document.getElementById('loader-prog-fill').parentElement.style.display = 'block';
+      setLoaderText('Rendering 3D model…');
+      setLoaderProgress(50);
+      // Wait a frame so canvas-wrap has a real width/height before Three.js measures it
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          initThreeJS();
+          renderScan(previewBuf, fileExt || 'stl', lastMeta);
+        });
+      });
+    } else {
+      const loader = document.getElementById('viewer-loader');
+      loader.style.display = 'flex';
+      loader.classList.remove('hidden');
+      document.getElementById('viewer-error').style.display = 'none';
+      document.querySelector('#viewer-loader .loader-ring').style.display = 'none';
+      document.getElementById('loader-prog-fill').parentElement.style.display = 'none';
+      document.getElementById('loader-text').textContent = 'No scan loaded yet. Generate a link from the Doctor Portal, or open a patient link directly.';
     }
   }
 }
@@ -826,7 +849,7 @@ async function generateLink() {
   await sleep(100);
 
   // Build short hash:  scanId|owner|repo|branch|base64meta
-  const b64meta = btoa(unescape(encodeURIComponent(JSON.stringify(meta))));
+  const b64meta = b64UrlEncode(unescape(encodeURIComponent(JSON.stringify(meta))));
   const hash = `${scanId}|${cfg.owner}|${cfg.repo}|${cfg.branch}|${b64meta}`;
   const base = `${location.origin}${location.pathname}`;
   const link = `${base}#${hash}`;
@@ -955,7 +978,7 @@ async function loadScanFromHash(hash) {
   const fullB64meta = [b64meta, ...rest].join('|');
 
   let meta = {};
-  try { meta = JSON.parse(decodeURIComponent(escape(atob(fullB64meta)))); } catch(e){}
+  try { meta = JSON.parse(decodeURIComponent(escape(b64UrlDecode(fullB64meta)))); } catch(e){}
 
   populatePatientCard(meta);
   initThreeJS();
@@ -1269,12 +1292,13 @@ function parsePLY(buf) {
   for (let i = 0; i < lines.length; i++) {
     const l = lines[i];
     if (l.startsWith('format')) format = l.includes('binary_little') ? 'binary_little' : l.includes('binary_big') ? 'binary_big' : 'ascii';
-    if (l.startsWith('element vertex')) vertexCount = parseInt(l.split(' ')[2]);
-    if (l.startsWith('element face'))   { faceCount = parseInt(l.split(' ')[2]); inVertex = false; inFace = true; }
-    if (l === 'element vertex')         { inVertex = true; inFace = false; }
-    if (l.startsWith('element') && !l.startsWith('element vertex') && !l.startsWith('element face')) inVertex = false;
+    if (l.startsWith('element vertex')) { vertexCount = parseInt(l.split(/\s+/)[2]); inVertex = true; inFace = false; }
+    else if (l.startsWith('element face')) { faceCount = parseInt(l.split(/\s+/)[2]); inVertex = false; inFace = true; }
+    else if (l.startsWith('element')) { inVertex = false; inFace = false; }
     if (l.startsWith('property') && inVertex) {
-      const parts = l.split(' ');
+      const parts = l.split(/\s+/);
+      // property list <count_type> <index_type> name  -> skip (shouldn't appear under vertex, but guard anyway)
+      if (parts[1] === 'list') continue;
       vertexProps.push({type: parts[1], name: parts[2]});
     }
     if (l === 'end_header') {
@@ -1510,6 +1534,16 @@ function uint8ToBase64(u8) {
   for (let i = 0; i < u8.length; i += chunk)
     bin += String.fromCharCode(...u8.subarray(i, Math.min(i+chunk, u8.length)));
   return btoa(bin);
+}
+// URL-safe base64 — replaces +/= with -_ . (no padding) so the link
+// survives WhatsApp link-detection, email clients, and copy/paste on mobile.
+function b64UrlEncode(str) {
+  return btoa(str).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+function b64UrlDecode(str) {
+  let s = str.replace(/-/g,'+').replace(/_/g,'/');
+  while (s.length % 4) s += '=';
+  return atob(s);
 }
 function sleep(ms) { return new Promise(r=>setTimeout(r,ms)); }
 
