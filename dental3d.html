@@ -650,7 +650,7 @@ function switchTab(tab) {
       document.getElementById('viewer-error').style.display = 'none';
       document.querySelector('#viewer-loader .loader-ring').style.display = 'block';
       document.getElementById('loader-prog-fill').parentElement.style.display = 'block';
-      setLoaderText('Rendering 3D model…');
+      setLoaderText('Rendering local file (not yet uploaded)…');
       setLoaderProgress(50);
       // Wait a frame so canvas-wrap has a real width/height before Three.js measures it
       requestAnimationFrame(() => {
@@ -918,9 +918,12 @@ function copyLink() {
   navigator.clipboard.writeText(lastLink).then(() => toast('📋 Link copied!'));
 }
 function previewInViewer() {
-  if (!previewBuf) return;
-  switchTab('viewer');
-  renderScan(previewBuf, fileExt || 'stl', lastMeta);
+  if (!lastLink) return;
+  switchPage('viewer');
+  document.querySelectorAll('.nav-pill').forEach(el => el.classList.remove('active'));
+  const hash = lastLink.split('#')[1] || '';
+  // Fetch exactly the same way a patient's device would — no local shortcuts.
+  loadScanFromHash(hash);
 }
 
 // ══════════════════════════════════════
@@ -1134,8 +1137,13 @@ function renderScan(buf, ext, meta) {
   geometry.scale(scale, scale, scale);
   geometry.computeBoundingBox();
 
-  // Color vertices — dental tissue coloring
-  applyDentalColors(geometry);
+  // Use the file's own color data if present (e.g. PLY scans with true RGB per vertex).
+  // Only generate synthetic dental coloring when no real color data exists (e.g. STL,
+  // which has no color channel at all, or a PLY exported without vertex colors).
+  const hasRealColor = !!geometry.attributes.color;
+  if (!hasRealColor) {
+    applyDentalColors(geometry);
+  }
 
   const material = new THREE.MeshPhongMaterial({
     vertexColors: true,
