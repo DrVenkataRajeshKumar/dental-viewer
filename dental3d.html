@@ -620,20 +620,48 @@ let lastPinchDist = 0;
 // ══════════════════════════════════════
 //  INIT
 // ══════════════════════════════════════
-window.addEventListener('load', () => {
-  document.getElementById('f-date').value = new Date().toISOString().slice(0,10);
+// ══════════════════════════════════════
+//  INIT — robust against slow CDN loads, stray whitespace in copied
+//  links, and browsers that fire events in unusual orders.
+// ══════════════════════════════════════
+function getCleanHash() {
+  // location.hash can pick up a trailing slash, stray %20, or whitespace
+  // if a link was copy-pasted through certain keyboards/apps. Trim defensively.
+  let h = location.hash.slice(1);
+  try { h = decodeURIComponent(h); } catch(e) {}
+  return h.trim();
+}
 
-  const hash = location.hash.slice(1);
-  if (hash && hash.includes('|')) {
-    // Patient opened a scan link
+function routeByHash() {
+  const hash = getCleanHash();
+  if (hash && hash.split('|').length >= 5) {
     document.getElementById('main-nav').style.display = 'none';
     switchPage('viewer');
     loadScanFromHash(hash);
-  } else {
+    return true;
+  }
+  return false;
+}
+
+// Run as early as possible (DOM ready), not only on full 'load',
+// so a slow three.js/pako CDN download never delays routing.
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('f-date').value = new Date().toISOString().slice(0,10);
+  if (!routeByHash()) {
     switchPage('doctor');
     renderGitConfigState();
     renderPatientList();
   }
+});
+
+// Safety net: if the hash becomes available slightly after DOMContentLoaded
+// (rare, but happens on some in-app browsers/WebViews), re-route once it does.
+window.addEventListener('hashchange', () => { routeByHash(); });
+window.addEventListener('load', () => {
+  // Re-check once everything (incl. three.js/pako) has finished loading,
+  // in case the very first check ran before the hash was readable.
+  if (document.getElementById('page-viewer').classList.contains('active')) return;
+  routeByHash();
 });
 
 // ══════════════════════════════════════
@@ -1078,8 +1106,10 @@ function initThreeJS() {
   renderer.setSize(W, H);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.05;
+  renderer.toneMappingExposure = 0.95;
+  renderer.outputEncoding = THREE.sRGBEncoding;
   renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
   scene = new THREE.Scene();
   scene.fog = new THREE.FogExp2(0x060b14, 0.035);
@@ -1087,26 +1117,24 @@ function initThreeJS() {
   camera = new THREE.PerspectiveCamera(45, W/H, 0.001, 500);
   updateCameraFromSpherical();
 
-  // Lighting — clinical white + subtle fill
-  const ambient = new THREE.AmbientLight(0xfff8f5, 0.5);
-  scene.add(ambient);
+  // Lighting — soft clinical light, closer to how chairside scanner
+  // software renders moist oral tissue: mostly soft/ambient with one
+  // gentle key light, avoiding hard specular hot-spots.
+  const hemi = new THREE.HemisphereLight(0xfff8f0, 0x9fb8c8, 0.75);
+  scene.add(hemi);
 
-  const key = new THREE.DirectionalLight(0xffffff, 1.6);
-  key.position.set(0, 8, 6);
+  const key = new THREE.DirectionalLight(0xffffff, 0.9);
+  key.position.set(2, 6, 5);
   key.castShadow = true;
   scene.add(key);
 
-  const fill = new THREE.DirectionalLight(0xd0e8ff, 0.5);
-  fill.position.set(-6, 2, 4);
+  const fill = new THREE.DirectionalLight(0xe8f0ff, 0.35);
+  fill.position.set(-5, 1, 3);
   scene.add(fill);
 
-  const rim = new THREE.DirectionalLight(0xfff0e0, 0.4);
-  rim.position.set(4, -4, -3);
+  const rim = new THREE.DirectionalLight(0xfff4ea, 0.25);
+  rim.position.set(3, -3, -4);
   scene.add(rim);
-
-  const under = new THREE.DirectionalLight(0xe8f4ff, 0.25);
-  under.position.set(0, -6, 2);
-  scene.add(under);
 
   // Grid
   const grid = new THREE.GridHelper(8, 32, 0x0e2040, 0x0a1a30);
@@ -1145,11 +1173,14 @@ function renderScan(buf, ext, meta) {
     applyDentalColors(geometry);
   }
 
-  const material = new THREE.MeshPhongMaterial({
+  const material = new THREE.MeshPhysicalMaterial({
     vertexColors: true,
-    specular: new THREE.Color(0.3, 0.28, 0.25),
-    shininess: 60,
-    side: THREE.DoubleSide
+    side: THREE.DoubleSide,
+    roughness: 0.42,        // moist tissue scatters light softly, not mirror-sharp
+    metalness: 0.0,
+    clearcoat: 0.4,         // subtle wet sheen, like saliva film on enamel/gingiva
+    clearcoatRoughness: 0.5,
+    reflectivity: 0.25
   });
 
   if (meshObj) scene.remove(meshObj);
