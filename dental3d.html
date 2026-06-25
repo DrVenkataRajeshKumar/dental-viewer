@@ -1257,15 +1257,15 @@ function applyDentalColors(geo) {
     const occlusion = (1 - smooth(0.2, 0.6, lateralN)) * 0.12;
     tr -= occlusion; tg -= occlusion; tb -= occlusion * 0.7;
 
-    // ── Gingiva color ── coral-pink attached gingiva, deepening to a
-    // more saturated red toward the apical/vestibular fold, with a
-    // slightly lighter, stippled-looking mid-zone.
+    // ── Gingiva color ── sampled from a real clinical photo of healthy
+    // gingiva: a deep, saturated coral-red (RGB ~196,60,83), not a
+    // light pastel pink. Darker still toward the apical/vestibular fold.
     const apicalAmt  = gWeight * smooth(0.28, 0.0, tHeight);   // deep red near fold
-    const marginAmt  = gWeight * smooth(0.05, 0.3, tHeight) * (1 - smooth(0.3, 0.6, tHeight)); // brighter right at margin
+    const marginAmt  = gWeight * smooth(0.05, 0.3, tHeight) * (1 - smooth(0.3, 0.6, tHeight)); // slightly brighter right at margin
 
-    let gr = 0.80, gg = 0.36, gb = 0.40;                       // base attached gingiva (coral-pink, saturated)
-    gr = lerp(gr, 0.87, marginAmt*0.5); gg = lerp(gg, 0.46, marginAmt*0.5); gb = lerp(gb, 0.48, marginAmt*0.5); // margin highlight
-    gr = lerp(gr, 0.62, apicalAmt*0.7); gg = lerp(gg, 0.20, apicalAmt*0.7); gb = lerp(gb, 0.26, apicalAmt*0.7); // deep apical red
+    let gr = 0.77, gg = 0.235, gb = 0.325;                      // base attached gingiva — sampled reference color
+    gr = lerp(gr, 0.80, marginAmt*0.4); gg = lerp(gg, 0.30, marginAmt*0.4); gb = lerp(gb, 0.38, marginAmt*0.4); // subtle margin highlight
+    gr = lerp(gr, 0.55, apicalAmt*0.7); gg = lerp(gg, 0.13, apicalAmt*0.7); gb = lerp(gb, 0.20, apicalAmt*0.7); // deeper apical red
 
     // ── Blend tooth/gingiva with a slightly sharpened mix to avoid a
     // washed-out, low-contrast seam between the two tissues.
