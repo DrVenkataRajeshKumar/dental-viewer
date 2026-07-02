@@ -168,6 +168,34 @@ textarea.inp{resize:vertical;min-height:80px;line-height:1.55;}
   border-radius:100px;font-size:.73rem;font-weight:600;
 }
 
+/* Multi-slot scan upload grid */
+.slot-grid{display:grid;grid-template-columns:1fr 1fr;gap:.75rem;}
+.scan-slot{
+  border:2px dashed var(--border2);border-radius:var(--radius-s);
+  padding:1.1rem .9rem;text-align:center;cursor:pointer;
+  transition:all .2s;position:relative;background:var(--surf);
+}
+.scan-slot:hover,.scan-slot.drag-over{border-color:var(--teal);background:var(--teal-dim);}
+.scan-slot.has-file{border-color:var(--success);background:rgba(16,185,129,.06);border-style:solid;}
+.scan-slot input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%;}
+.slot-icon{font-size:1.5rem;display:block;margin-bottom:.3rem;}
+.slot-label{font-size:.78rem;font-weight:700;margin-bottom:.15rem;}
+.slot-req{font-size:.62rem;font-weight:600;color:var(--teal-l);text-transform:uppercase;letter-spacing:.4px;}
+.slot-opt{font-size:.62rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;}
+.slot-sub{font-size:.68rem;color:var(--sub);margin-top:.2rem;}
+.slot-file-name{font-size:.68rem;color:#34d399;font-weight:600;margin-top:.4rem;word-break:break-all;}
+.slot-clear{
+  position:absolute;top:6px;right:6px;width:20px;height:20px;border-radius:50%;
+  background:rgba(0,0,0,.4);color:var(--sub);border:none;font-size:.7rem;cursor:pointer;
+  display:none;align-items:center;justify-content:center;z-index:2;
+}
+.scan-slot.has-file .slot-clear{display:flex;}
+.bite-hint{
+  font-size:.74rem;color:var(--sub);background:rgba(8,145,178,.08);
+  border:1px solid rgba(8,145,178,.18);border-radius:var(--radius-s);
+  padding:.6rem .8rem;margin-top:.75rem;line-height:1.55;
+}
+
 /* Progress */
 .prog-card{
   background:var(--card);border:1px solid var(--border2);border-radius:var(--radius);
@@ -444,19 +472,31 @@ textarea.inp{resize:vertical;min-height:80px;line-height:1.55;}
       </div>
     </div>
 
-    <!-- STEP 2: Upload File -->
+    <!-- STEP 2: Upload Scans -->
     <div class="step">
       <div class="step-num">2</div>
       <div class="step-body">
-        <div class="step-title">Upload 3D Scan</div>
-        <div class="dzone" id="dzone" ondragover="dzDrag(event,true)" ondragleave="dzDrag(event,false)" ondrop="dzDrop(event)">
-          <input type="file" id="file-input" accept=".stl,.ply" onchange="fileChosen(event)">
-          <span class="dzone-icon" id="dz-icon">🦷</span>
-          <div class="dzone-title" id="dz-title">Drop your 3D scan file here</div>
-          <div class="dzone-sub" id="dz-sub">or click to browse · .STL and .PLY supported · 5–10 MB</div>
-          <div class="file-badge" id="file-badge" style="display:none">
-            <span>✓</span><span id="file-badge-name"></span>
+        <div class="step-title">Upload 3D Scans</div>
+        <div class="slot-grid">
+          <div class="scan-slot" id="slot-upper" ondragover="slotDrag(event,'upper',true)" ondragleave="slotDrag(event,'upper',false)" ondrop="slotDrop(event,'upper')">
+            <button class="slot-clear" onclick="event.stopPropagation();clearSlot('upper')">✕</button>
+            <input type="file" id="file-upper" accept=".stl,.ply" onchange="slotFileChosen(event,'upper')">
+            <span class="slot-icon">🦷</span>
+            <div class="slot-label">Upper Jaw <span class="slot-opt">(Maxilla)</span></div>
+            <div class="slot-sub" id="slot-sub-upper">Drop STL/PLY or click</div>
+            <div class="slot-file-name" id="slot-file-upper" style="display:none"></div>
           </div>
+          <div class="scan-slot" id="slot-lower" ondragover="slotDrag(event,'lower',true)" ondragleave="slotDrag(event,'lower',false)" ondrop="slotDrop(event,'lower')">
+            <button class="slot-clear" onclick="event.stopPropagation();clearSlot('lower')">✕</button>
+            <input type="file" id="file-lower" accept=".stl,.ply" onchange="slotFileChosen(event,'lower')">
+            <span class="slot-icon">🦷</span>
+            <div class="slot-label">Lower Jaw <span class="slot-opt">(Mandible)</span></div>
+            <div class="slot-sub" id="slot-sub-lower">Drop STL/PLY or click</div>
+            <div class="slot-file-name" id="slot-file-lower" style="display:none"></div>
+          </div>
+        </div>
+        <div class="bite-hint">
+          💡 Upload <strong>Upper</strong> and/or <strong>Lower</strong> — at least one is required.
         </div>
       </div>
     </div>
@@ -597,14 +637,17 @@ textarea.inp{resize:vertical;min-height:80px;line-height:1.55;}
 // ═══════════════════════════════════════════════════════════════
 
 // ── State ──
-let fileBuffer   = null;   // ArrayBuffer of chosen scan file
-let fileExt      = '';     // 'stl' or 'ply'
+// Each slot holds: {buffer: ArrayBuffer, ext: 'stl'|'ply', name: string}
+const SLOTS = ['upper', 'lower'];
+const SLOT_LABELS = { upper:'Upper Jaw', lower:'Lower Jaw' };
+let scanSlots = { upper:null, lower:null };
 let lastLink     = null;
 let lastMeta     = null;
-let previewBuf   = null;   // Buffer used for local preview
 
-// ── Three.js state ──
-let renderer, scene, camera, meshObj;
+// ── Three.js state (viewer) ──
+let renderer, scene, camera;
+let meshUpper = null, meshLower = null;
+let groupUpper = null, groupLower = null;  // each arch's pose lives on its group transform
 let animId;
 let isAutoRotate = false;
 let isWireframe  = false;
@@ -670,7 +713,8 @@ window.addEventListener('load', () => {
 function switchTab(tab) {
   switchPage(tab);
   if (tab === 'viewer') {
-    if (previewBuf) {
+    const hasAnySlot = scanSlots.upper || scanSlots.lower;
+    if (hasAnySlot) {
       // Reset loader UI in case it was previously hidden/errored
       const loader = document.getElementById('viewer-loader');
       loader.style.display = 'flex';
@@ -678,13 +722,15 @@ function switchTab(tab) {
       document.getElementById('viewer-error').style.display = 'none';
       document.querySelector('#viewer-loader .loader-ring').style.display = 'block';
       document.getElementById('loader-prog-fill').parentElement.style.display = 'block';
-      setLoaderText('Rendering local file (not yet uploaded)…');
+      setLoaderText('Rendering local files (not yet uploaded)…');
       setLoaderProgress(50);
       // Wait a frame so canvas-wrap has a real width/height before Three.js measures it
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           initThreeJS();
-          renderScan(previewBuf, fileExt || 'stl', lastMeta);
+          const fetched = {};
+          SLOTS.forEach(s => { if (scanSlots[s]) fetched[s] = { buffer: scanSlots[s].buffer, ext: scanSlots[s].ext }; });
+          renderScene(fetched, lastMeta);
         });
       });
     } else {
@@ -756,48 +802,55 @@ function renderGitConfigState() {
 // ══════════════════════════════════════
 //  FILE HANDLING
 // ══════════════════════════════════════
-function dzDrag(e, on) {
+function slotDrag(e, slot, on) {
   e.preventDefault();
-  document.getElementById('dzone').classList.toggle('drag-over', on);
+  document.getElementById('slot-'+slot).classList.toggle('drag-over', on);
 }
-function dzDrop(e) {
+function slotDrop(e, slot) {
   e.preventDefault();
-  document.getElementById('dzone').classList.remove('drag-over');
+  document.getElementById('slot-'+slot).classList.remove('drag-over');
   const f = e.dataTransfer.files[0];
-  if (f) processFile(f);
+  if (f) processSlotFile(f, slot);
 }
-function fileChosen(e) {
+function slotFileChosen(e, slot) {
   const f = e.target.files[0];
-  if (f) processFile(f);
+  if (f) processSlotFile(f, slot);
 }
-function processFile(f) {
+function processSlotFile(f, slot) {
   const ext = f.name.split('.').pop().toLowerCase();
   if (!['stl','ply'].includes(ext)) { toast('Please upload an .STL or .PLY file'); return; }
-  fileExt = ext;
 
   const sizeMB = (f.size / 1024 / 1024).toFixed(1);
-  document.getElementById('dz-icon').textContent = ext === 'ply' ? '🔵' : '🦷';
-  document.getElementById('dz-title').textContent = f.name;
-  document.getElementById('dz-sub').textContent = `${sizeMB} MB · ${ext.toUpperCase()} file`;
-  document.getElementById('file-badge').style.display = 'inline-flex';
-  document.getElementById('file-badge-name').textContent = f.name;
-  document.getElementById('dzone').classList.add('has-file');
+  const el = document.getElementById('slot-'+slot);
+  el.classList.add('has-file');
+  document.getElementById('slot-sub-'+slot).textContent = `${sizeMB} MB · ${ext.toUpperCase()}`;
+  document.getElementById('slot-file-'+slot).style.display = 'block';
+  document.getElementById('slot-file-'+slot).textContent = '✓ ' + f.name;
 
   const reader = new FileReader();
   reader.onload = e => {
-    fileBuffer = e.target.result;
-    previewBuf = fileBuffer.slice(0); // keep for preview
+    scanSlots[slot] = { buffer: e.target.result, ext, name: f.name };
     validateForm();
   };
   reader.readAsArrayBuffer(f);
 }
+function clearSlot(slot) {
+  scanSlots[slot] = null;
+  const el = document.getElementById('slot-'+slot);
+  el.classList.remove('has-file');
+  document.getElementById('file-'+slot).value = '';
+  document.getElementById('slot-sub-'+slot).textContent = 'Drop STL/PLY or click';
+  document.getElementById('slot-file-'+slot).style.display = 'none';
+  validateForm();
+}
 
 function validateForm() {
+  const hasUpperOrLower = scanSlots.upper || scanSlots.lower;
   const ok = (
     document.getElementById('f-name').value.trim() &&
     document.getElementById('f-age').value.trim() &&
     document.getElementById('f-sex').value &&
-    fileBuffer &&
+    hasUpperOrLower &&
     getGitCfg()
   );
   document.getElementById('gen-btn').disabled = !ok;
@@ -810,6 +863,9 @@ async function generateLink() {
   const cfg = getGitCfg();
   if (!cfg) { toast('Configure GitHub storage first'); return; }
 
+  const providedSlots = SLOTS.filter(s => scanSlots[s]);
+  if (!providedSlots.length) { toast('Upload at least one scan (Upper or Lower)'); return; }
+
   const name  = document.getElementById('f-name').value.trim();
   const age   = document.getElementById('f-age').value.trim();
   const sex   = document.getElementById('f-sex').value;
@@ -821,51 +877,57 @@ async function generateLink() {
   const meta = {n:name, a:age, s:sex, p:phone, d:date, t:type, no:notes};
   lastMeta = meta;
 
-  setProgress(true, 'Compressing scan…', 0, '');
   disableGenBtn(true);
-  await sleep(30);
+  const scanIds = {};
+  const totalSlots = providedSlots.length;
 
-  // Compress with pako DEFLATE
-  const compressed = pako.deflate(new Uint8Array(fileBuffer), {level:6});
-  const b64content = uint8ToBase64(compressed);
-  const compKB = (compressed.length/1024).toFixed(0);
-
-  setProgress(true, 'Uploading to GitHub…', 20, `Compressed to ${compKB} KB`);
-  await sleep(40);
-
-  // Build a short unique scan ID
-  const ts    = Date.now().toString(36);
-  const rand  = Math.random().toString(36).slice(2,6);
-  const scanId = `${ts}_${rand}`;
-  const filePath = `scans/${scanId}.bin`;
-
-  // GitHub Contents API
-  const apiUrl = `https://api.github.com/repos/${cfg.owner}/${cfg.repo}/contents/${filePath}`;
-
-  let uploadOk = false;
   try {
-    const body = {
-      message: `Add scan ${scanId} for ${name} (${date})`,
-      content: b64content,
-      branch:  cfg.branch
-    };
+    for (let idx = 0; idx < providedSlots.length; idx++) {
+      const slot = providedSlots[idx];
+      const slotLabel = SLOT_LABELS[slot];
+      const basePct = Math.round((idx / totalSlots) * 100);
 
-    const resp = await fetchWithProgress(apiUrl, {
-      method:  'PUT',
-      headers: {
-        'Authorization': `Bearer ${cfg.token}`,
-        'Content-Type':  'application/json',
-        'Accept':        'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28'
-      },
-      body: JSON.stringify(body)
-    }, (pct) => setProgress(true, 'Uploading to GitHub…', 20 + Math.round(pct * 0.7), `${Math.round(pct)}% · ${compKB} KB`));
+      setProgress(true, `Compressing ${slotLabel}…`, basePct, `File ${idx+1} of ${totalSlots}`);
+      await sleep(20);
 
-    if (!resp.ok) {
-      const err = await resp.json().catch(()=>({}));
-      throw new Error(err.message || `HTTP ${resp.status}`);
+      const compressed = pako.deflate(new Uint8Array(scanSlots[slot].buffer), {level:6});
+      const b64content = uint8ToBase64(compressed);
+      const compKB = (compressed.length/1024).toFixed(0);
+
+      setProgress(true, `Uploading ${slotLabel}…`, basePct + Math.round(10/totalSlots), `${compKB} KB · File ${idx+1} of ${totalSlots}`);
+      await sleep(20);
+
+      const ts    = Date.now().toString(36);
+      const rand  = Math.random().toString(36).slice(2,6);
+      const scanId = `${ts}_${rand}_${slot}`;
+      const filePath = `scans/${scanId}.bin`;
+      const apiUrl = `https://api.github.com/repos/${cfg.owner}/${cfg.repo}/contents/${filePath}`;
+
+      const body = {
+        message: `Add ${slotLabel} scan ${scanId} for ${name} (${date})`,
+        content: b64content,
+        branch:  cfg.branch
+      };
+
+      const resp = await fetchWithProgress(apiUrl, {
+        method:  'PUT',
+        headers: {
+          'Authorization': `Bearer ${cfg.token}`,
+          'Content-Type':  'application/json',
+          'Accept':        'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28'
+        },
+        body: JSON.stringify(body)
+      }, (pct) => setProgress(true, `Uploading ${slotLabel}…`,
+            basePct + Math.round((pct/100) * (90/totalSlots)),
+            `${Math.round(pct)}% · ${compKB} KB · File ${idx+1} of ${totalSlots}`));
+
+      if (!resp.ok) {
+        const err = await resp.json().catch(()=>({}));
+        throw new Error(`${slotLabel}: ${err.message || 'HTTP ' + resp.status}`);
+      }
+      scanIds[slot] = scanId;
     }
-    uploadOk = true;
   } catch(err) {
     setProgress(false);
     disableGenBtn(false);
@@ -873,16 +935,19 @@ async function generateLink() {
     return;
   }
 
-  setProgress(true, 'Building link…', 92, '');
+  setProgress(true, 'Building link…', 96, '');
   await sleep(100);
 
-  // Build short hash:  scanId|owner|repo|branch|base64meta
+  // Build compact scan-id segment, e.g.  u:abc,l:def
+  const prefixMap = {upper:'u', lower:'l'};
+  const scanSeg = SLOTS.filter(s => scanIds[s]).map(s => `${prefixMap[s]}:${scanIds[s]}`).join(',');
+
   const b64meta = b64UrlEncode(unescape(encodeURIComponent(JSON.stringify(meta))));
-  const hash = `${scanId}|${cfg.owner}|${cfg.repo}|${cfg.branch}|${b64meta}`;
+  const hash = `${scanSeg}|${cfg.owner}|${cfg.repo}|${cfg.branch}|${b64meta}`;
   const base = `${location.origin}${location.pathname}`;
   const link = `${base}#${hash}`;
 
-  setProgress(true, '✅ Done!', 100, `File: ${filePath}`);
+  setProgress(true, '✅ Done!', 100, `${providedSlots.length} file(s) uploaded`);
   await sleep(400);
   setProgress(false);
   disableGenBtn(false);
@@ -901,13 +966,13 @@ async function generateLink() {
     : `https://wa.me/?text=${waMsg}`;
 
   // Save to local history
-  const rec = {id:scanId, name, age, sex, phone, date, type, notes, link, created:Date.now()};
+  const rec = {id:scanSeg, name, age, sex, phone, date, type, notes, link, created:Date.now()};
   const history = JSON.parse(localStorage.getItem('ds_patients') || '[]');
   history.unshift(rec);
   localStorage.setItem('ds_patients', JSON.stringify(history.slice(0,30)));
   renderPatientList();
 
-  toast('✅ Scan uploaded! Link ready to share.');
+  toast('✅ Scan(s) uploaded! Link ready to share.');
 }
 
 function setProgress(show, label='', pct=0, sub='') {
@@ -998,48 +1063,69 @@ function clearHistory() {
 //  SCAN VIEWER  —  Load from hash
 // ══════════════════════════════════════
 async function loadScanFromHash(hash) {
-  // hash: scanId|owner|repo|branch|base64meta
+  // hash format:  u:<id>,l:<id>|owner|repo|branch|base64meta
+  // (either or both of u/l may be present)
   const parts = hash.split('|');
-  if (parts.length < 5) {
+  if (parts.length < 4) {
     showViewerError('Invalid scan link format.');
     return;
   }
-  const [scanId, owner, repo, branch, b64meta, ...rest] = parts;
-  // re-join in case base64 has | (it shouldn't, but safe)
-  const fullB64meta = [b64meta, ...rest].join('|');
+  const [scanSeg, owner, repo, branch, ...rest] = parts;
+  const fullB64meta = rest.join('|');
 
   let meta = {};
   try { meta = JSON.parse(decodeURIComponent(escape(b64UrlDecode(fullB64meta)))); } catch(e){}
 
+  // Parse scanSeg into {upper, lower} scan IDs
+  const prefixMap = {u:'upper', l:'lower'};
+  const ids = {};
+  scanSeg.split(',').forEach(seg => {
+    const ci = seg.indexOf(':');
+    if (ci === -1) return;
+    const prefix = seg.slice(0, ci), id = seg.slice(ci+1);
+    const slot = prefixMap[prefix];
+    if (slot) ids[slot] = id;
+  });
+
+  if (!ids.upper && !ids.lower) {
+    showViewerError('This link has no upper or lower scan to display.');
+    return;
+  }
+
   populatePatientCard(meta);
   initThreeJS();
 
-  const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/scans/${scanId}.bin`;
-  setLoaderText('Fetching scan from server…');
-  setLoaderProgress(10);
+  const slotsToFetch = SLOTS.filter(s => ids[s]);
+  const fetched = {};
 
   try {
-    const data = await fetchBinaryWithProgress(rawUrl, pct => {
-      setLoaderProgress(10 + Math.round(pct * 0.7));
-      setLoaderText(`Downloading scan… ${Math.round(pct)}%`);
-    });
+    for (let i = 0; i < slotsToFetch.length; i++) {
+      const slot = slotsToFetch[i];
+      const label = SLOT_LABELS[slot];
+      const basePct = Math.round((i / slotsToFetch.length) * 80);
+      setLoaderText(`Downloading ${label}… (${i+1}/${slotsToFetch.length})`);
+      setLoaderProgress(basePct);
 
-    setLoaderText('Decompressing…');
-    setLoaderProgress(82);
-    await sleep(30);
+      const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/scans/${ids[slot]}.bin`;
+      const data = await fetchBinaryWithProgress(rawUrl, pct => {
+        setLoaderProgress(basePct + Math.round((pct/100) * (80/slotsToFetch.length)));
+        setLoaderText(`Downloading ${label}… ${Math.round(pct)}% (${i+1}/${slotsToFetch.length})`);
+      });
 
-    const inflated = pako.inflate(data).buffer;
-    setLoaderText('Rendering 3D model…');
-    setLoaderProgress(95);
-    await sleep(30);
+      const inflated = pako.inflate(data).buffer;
+      const ext = detectFormat(inflated);
+      fetched[slot] = { buffer: inflated, ext };
+    }
 
-    // Detect format from content
-    const ext = detectFormat(inflated);
-    renderScan(inflated, ext, meta);
+    setLoaderText('Building 3D scene…');
+    setLoaderProgress(90);
+    await sleep(40);
+
+    renderScene(fetched, meta);
 
   } catch(err) {
     showViewerError(err.message.includes('404')
-      ? 'Scan not found. The link may have expired (10-day limit) or is invalid.'
+      ? 'One or more scans could not be found. The link may have expired (10-day limit) or is invalid.'
       : `Could not load scan: ${err.message}`);
   }
 }
@@ -1047,13 +1133,6 @@ async function loadScanFromHash(hash) {
 function detectFormat(buf) {
   const header = new TextDecoder().decode(new Uint8Array(buf, 0, 80));
   if (header.trimStart().startsWith('ply')) return 'ply';
-  // Binary STL: bytes 0-79 are header, 80-83 are triangle count
-  // ASCII STL: starts with "solid"
-  if (header.trimStart().toLowerCase().startsWith('solid')) {
-    // Could be ASCII STL or binary STL with "solid" in header
-    // If bytes at 80 make sense as triangle count, treat as binary
-    return 'stl';
-  }
   return 'stl';
 }
 
@@ -1098,6 +1177,7 @@ function initThreeJS() {
   const H = wrap.clientHeight || window.innerHeight - 120;
 
   if (renderer) { renderer.dispose(); cancelAnimationFrame(animId); }
+  meshUpper = null; meshLower = null; groupUpper = null; groupLower = null;
 
   renderer = new THREE.WebGLRenderer({
     canvas: document.getElementById('three-canvas'),
@@ -1145,75 +1225,140 @@ function initThreeJS() {
   animate();
 }
 
-function renderScan(buf, ext, meta) {
-  let geometry;
-  try {
-    geometry = ext === 'ply' ? parsePLY(buf) : parseSTL(buf);
-  } catch(e) {
-    showViewerError('Could not parse scan file: ' + e.message);
-    return;
-  }
-
+// ── Build a colored, normalized Three.js geometry from raw buffer+ext ──
+function buildGeometry(buf, ext) {
+  let geometry = ext === 'ply' ? parsePLY(buf) : parseSTL(buf);
   geometry.computeVertexNormals();
-  geometry.center();
   geometry.computeBoundingBox();
+  return geometry;
+}
 
+// Normalize a geometry in-place: center at origin, scale to a consistent size.
+function normalizeGeometry(geo) {
+  geo.center();
+  geo.computeBoundingBox();
   const size = new THREE.Vector3();
-  geometry.boundingBox.getSize(size);
-  const maxDim = Math.max(size.x, size.y, size.z);
+  geo.boundingBox.getSize(size);
+  const maxDim = Math.max(size.x, size.y, size.z) || 1;
   const scale = 3.0 / maxDim;
-  geometry.scale(scale, scale, scale);
-  geometry.computeBoundingBox();
+  geo.scale(scale, scale, scale);
+  geo.computeBoundingBox();
+  return scale;
+}
 
-  // Use the file's own color data if present (e.g. PLY scans with true RGB per vertex).
-  // Only generate synthetic dental coloring when no real color data exists (e.g. STL,
-  // which has no color channel at all, or a PLY exported without vertex colors).
-  const hasRealColor = !!geometry.attributes.color;
-  if (!hasRealColor) {
-    applyDentalColors(geometry);
-  }
-
-  const material = new THREE.MeshPhysicalMaterial({
+function makeMaterial() {
+  return new THREE.MeshPhysicalMaterial({
     vertexColors: true,
     side: THREE.DoubleSide,
-    roughness: 0.5,         // moist tissue scatters light softly, not mirror-sharp
+    roughness: 0.5,
     metalness: 0.0,
-    clearcoat: 0.3,         // subtle wet sheen, like saliva film on enamel/gingiva
+    clearcoat: 0.3,
     clearcoatRoughness: 0.6,
     reflectivity: 0.2
   });
+}
 
-  if (meshObj) scene.remove(meshObj);
-  meshObj = new THREE.Mesh(geometry, material);
-  meshObj.castShadow = true;
-  meshObj.receiveShadow = true;
-  scene.add(meshObj);
+function colorGeometry(geo, isLowerHint) {
+  if (!geo) return;
+  const hasRealColor = !!geo.attributes.color;
+  if (!hasRealColor) applyDentalColors(geo, isLowerHint);
+}
 
-  spherical = {theta:0.4, phi:1.15, radius:5};
+// ── Main scene builder: handles upper and/or lower scans ──
+async function renderScene(fetched, meta) {
+  let upperGeo = null, lowerGeo = null;
+
+  try {
+    if (fetched.upper) upperGeo = buildGeometry(fetched.upper.buffer, fetched.upper.ext);
+    if (fetched.lower) lowerGeo = buildGeometry(fetched.lower.buffer, fetched.lower.ext);
+  } catch(e) {
+    showViewerError('Could not parse one of the scan files: ' + e.message);
+    return;
+  }
+
+  // Normalize upper/lower independently for consistent on-screen size.
+  if (upperGeo) normalizeGeometry(upperGeo);
+  if (lowerGeo) normalizeGeometry(lowerGeo);
+
+  colorGeometry(upperGeo, false);
+  colorGeometry(lowerGeo, true);
+
+  if (groupUpper) { scene.remove(groupUpper); groupUpper = null; meshUpper = null; }
+  if (groupLower) { scene.remove(groupLower); groupLower = null; meshLower = null; }
+
+  // Each arch sits inside its own group: the group transform holds the
+  // current pose; the mesh itself stays at identity inside its group.
+  if (upperGeo) {
+    meshUpper = new THREE.Mesh(upperGeo, makeMaterial());
+    meshUpper.castShadow = true; meshUpper.receiveShadow = true;
+    groupUpper = new THREE.Group();
+    groupUpper.add(meshUpper);
+    scene.add(groupUpper);
+  }
+  if (lowerGeo) {
+    meshLower = new THREE.Mesh(lowerGeo, makeMaterial());
+    meshLower.castShadow = true; meshLower.receiveShadow = true;
+    groupLower = new THREE.Group();
+    groupLower.add(meshLower);
+    scene.add(groupLower);
+  }
+
+  applyOpenMouthPose();
+
+  spherical = {theta:0.4, phi:1.15, radius: (upperGeo && lowerGeo) ? 8 : 5};
   panOffset = {x:0, y:0};
   updateCameraFromSpherical();
 
   hideLoader();
   if (meta) populatePatientCard(meta);
 
-  toast('🦷 Scan loaded! Drag to rotate · Pinch to zoom');
+  const parts = [];
+  if (upperGeo) parts.push('upper');
+  if (lowerGeo) parts.push('lower');
+  toast(`🦷 ${parts.join(' + ')} scan loaded! Drag to rotate · Pinch to zoom`);
+}
+
+// "Mouth open" pose: upper tilted back, lower tilted forward, with a clear
+// gap between them, as if the patient is opening their mouth for the
+// camera/scanner — keeps the two arches visually separated rather than
+// overlapping in the middle.
+function applyOpenMouthPose() {
+  const TILT = Math.PI / 5.5; // ~33°
+  const GAP  = 3.4;           // scene units between the two arches
+
+  if (groupUpper) {
+    groupUpper.matrix.identity();
+    groupUpper.rotation.set(-TILT, 0, 0);
+    groupUpper.position.set(0, GAP * 0.5, 0);
+  }
+  if (groupLower) {
+    groupLower.matrix.identity();
+    groupLower.rotation.set(TILT, 0, 0);
+    groupLower.position.set(0, -GAP * 0.5, 0);
+  }
 }
 
 // ── Dental coloring algorithm ──
-function applyDentalColors(geo) {
+function applyDentalColors(geo, knownIsLower) {
   const pos = geo.attributes.position;
   const nrm = geo.attributes.normal;
   const n   = pos.count;
   const colors = new Float32Array(n * 3);
 
-  // Determine jaw orientation (up-facing normals = tooth tops)
-  let upCount = 0, dnCount = 0;
-  for (let i = 0; i < n; i++) {
-    const ny = nrm.getY(i);
-    if (ny > 0.3) upCount++;
-    if (ny < -0.3) dnCount++;
+  // Determine jaw orientation. If the caller already knows which arch this
+  // is (from its upload slot), use that directly instead of guessing.
+  let isLower;
+  if (typeof knownIsLower === 'boolean') {
+    isLower = knownIsLower;
+  } else {
+    let upCount = 0, dnCount = 0;
+    for (let i = 0; i < n; i++) {
+      const ny = nrm.getY(i);
+      if (ny > 0.3) upCount++;
+      if (ny < -0.3) dnCount++;
+    }
+    isLower = dnCount > upCount;
   }
-  const isLower = dnCount > upCount;
   const topDir  = isLower ? -1 : 1;
 
   // Y range for gradient
@@ -1243,29 +1388,29 @@ function applyDentalColors(geo) {
     const gWeight = Math.min(1, Math.max(0, gScore));
     const tWeight = 1 - gWeight;
 
-    // ── Tooth color ── enamel: pale ivory at incisal/occlusal third,
-    // warming toward a deeper yellow at the cervical (gum-adjacent) third.
-    // Real enamel is NOT bright white — it reads closer to off-white/ivory.
+    // ── Tooth color ── bright, clean enamel at the incisal/occlusal third,
+    // with only a light warming toward the cervical (gum-adjacent) third
+    // so the arches read as a healthy, whitened smile rather than washed-out.
     const cervicalAmt = smooth(0.55, 0.18, tHeight);        // 0 at crown tip, 1 near gumline
     const edgeGloss   = smooth(0.78, 1.0, tHeight) * 0.5;   // subtle translucent brighten at incisal edge
 
-    let tr = 0.86, tg = 0.81, tb = 0.72;                    // mid-enamel base (ivory, not white)
-    tr = lerp(tr, 0.94, edgeGloss); tg = lerp(tg, 0.92, edgeGloss); tb = lerp(tb, 0.89, edgeGloss); // incisal translucency
-    tr = lerp(tr, 0.74, cervicalAmt); tg = lerp(tg, 0.63, cervicalAmt); tb = lerp(tb, 0.42, cervicalAmt); // cervical yellow-brown
+    let tr = 0.93, tg = 0.90, tb = 0.85;                    // mid-enamel base — bright whitish
+    tr = lerp(tr, 0.99, edgeGloss); tg = lerp(tg, 0.985, edgeGloss); tb = lerp(tb, 0.97, edgeGloss); // incisal translucency, near-white
+    tr = lerp(tr, 0.85, cervicalAmt); tg = lerp(tg, 0.78, cervicalAmt); tb = lerp(tb, 0.62, cervicalAmt); // gentler cervical warmth
 
     // Subtle ambient occlusion in interproximal/lateral concavities
-    const occlusion = (1 - smooth(0.2, 0.6, lateralN)) * 0.12;
+    const occlusion = (1 - smooth(0.2, 0.6, lateralN)) * 0.10;
     tr -= occlusion; tg -= occlusion; tb -= occlusion * 0.7;
 
-    // ── Gingiva color ── sampled from a real clinical photo of healthy
-    // gingiva: a deep, saturated coral-red (RGB ~196,60,83), not a
-    // light pastel pink. Darker still toward the apical/vestibular fold.
+    // ── Gingiva color ── a saturated, clinical reddish-pink (deeper and
+    // more red than a pale pastel gum tone), darker still toward the
+    // apical/vestibular fold for a natural, less "artificial" look.
     const apicalAmt  = gWeight * smooth(0.28, 0.0, tHeight);   // deep red near fold
     const marginAmt  = gWeight * smooth(0.05, 0.3, tHeight) * (1 - smooth(0.3, 0.6, tHeight)); // slightly brighter right at margin
 
-    let gr = 0.77, gg = 0.235, gb = 0.325;                      // base attached gingiva — sampled reference color
-    gr = lerp(gr, 0.80, marginAmt*0.4); gg = lerp(gg, 0.30, marginAmt*0.4); gb = lerp(gb, 0.38, marginAmt*0.4); // subtle margin highlight
-    gr = lerp(gr, 0.55, apicalAmt*0.7); gg = lerp(gg, 0.13, apicalAmt*0.7); gb = lerp(gb, 0.20, apicalAmt*0.7); // deeper apical red
+    let gr = 0.80, gg = 0.16, gb = 0.20;                        // base attached gingiva — deeper, more saturated red
+    gr = lerp(gr, 0.86, marginAmt*0.4); gg = lerp(gg, 0.22, marginAmt*0.4); gb = lerp(gb, 0.27, marginAmt*0.4); // subtle margin highlight
+    gr = lerp(gr, 0.58, apicalAmt*0.7); gg = lerp(gg, 0.07, apicalAmt*0.7); gb = lerp(gb, 0.11, apicalAmt*0.7); // deeper apical red
 
     // ── Blend tooth/gingiva with a slightly sharpened mix to avoid a
     // washed-out, low-contrast seam between the two tissues.
@@ -1451,7 +1596,7 @@ function parsePLYBinary(buf, dataStart, vertCount, faceCount, props) {
 // ── Animation loop ──
 function animate() {
   animId = requestAnimationFrame(animate);
-  if (meshObj && isAutoRotate) {
+  if ((meshUpper || meshLower) && isAutoRotate) {
     spherical.theta += 0.006;
     updateCameraFromSpherical();
   }
@@ -1470,7 +1615,7 @@ function updateCameraFromSpherical() {
 }
 
 function resetCamera() {
-  spherical = {theta:0.4, phi:1.15, radius:5};
+  spherical = {theta:0.4, phi:1.15, radius: (meshUpper && meshLower) ? 7 : 5};
   panOffset = {x:0, y:0};
   updateCameraFromSpherical();
 }
@@ -1479,9 +1624,10 @@ function adjustZoom(dir) {
   updateCameraFromSpherical();
 }
 function toggleWire() {
-  if (!meshObj) return;
+  if (!meshUpper && !meshLower) return;
   isWireframe = !isWireframe;
-  meshObj.material.wireframe = isWireframe;
+  if (meshUpper) meshUpper.material.wireframe = isWireframe;
+  if (meshLower) meshLower.material.wireframe = isWireframe;
   document.getElementById('btn-autorotate').style.color = isAutoRotate ? 'var(--teal-l)' : '';
 }
 function toggleAutoRotate() {
