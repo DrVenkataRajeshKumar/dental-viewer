@@ -441,6 +441,7 @@ textarea.inp{resize:vertical;min-height:80px;line-height:1.55;}
     <div class="cfg-btns">
       <button class="btn-sm btn-teal" onclick="saveGitConfig()">💾 Save Configuration</button>
       <button class="btn-sm btn-ghost" id="cfg-reconfigure" onclick="clearGitConfig()" style="display:none">Reconfigure</button>
+      <button class="btn-sm btn-ghost" id="cfg-test" onclick="testGitConfig()">🔌 Test Connection</button>
     </div>
   </div>
 
@@ -802,6 +803,91 @@ function saveGitConfig() {
   validateForm();
   toast('✅ GitHub configuration saved');
 }
+async function testGitConfig() {
+  const cfg = getGitCfg();
+  if (!cfg) {
+    // Try reading from fields if not saved yet
+    const owner  = document.getElementById('cfg-owner').value.trim();
+    const repo   = document.getElementById('cfg-repo').value.trim();
+    const token  = document.getElementById('cfg-token').value.trim();
+    if (!owner || !repo || !token) { toast('Fill in all fields before testing'); return; }
+    await runConnectionTest({owner, repo, token, branch: document.getElementById('cfg-branch').value.trim() || 'main'});
+  } else {
+    await runConnectionTest(cfg);
+  }
+}
+
+async function runConnectionTest(cfg) {
+  const btn = document.getElementById('cfg-test');
+  const orig = btn.textContent;
+  btn.textContent = '⏳ Testing…';
+  btn.disabled = true;
+
+  try {
+    // Step 1: verify repo exists and token has access
+    const repoResp = await fetch(`https://api.github.com/repos/${cfg.owner}/${cfg.repo}`, {
+      headers: {
+        'Authorization': `Bearer ${cfg.token}`,
+        'Accept': 'application/vnd.github+json'
+      }
+    });
+
+    if (!repoResp.ok) {
+      const j = await repoResp.json().catch(()=>({}));
+      if (repoResp.status === 404) {
+        toast(`❌ Repo "${cfg.owner}/${cfg.repo}" not found. Check repo name or token scope.`);
+      } else if (repoResp.status === 401) {
+        toast('❌ Token invalid or expired. Generate a new token at github.com → Settings → Developer settings.');
+      } else {
+        toast(`❌ GitHub error ${repoResp.status}: ${j.message || 'unknown error'}`);
+      }
+      return;
+    }
+
+    const repoData = await repoResp.json();
+    if (repoData.private) {
+      toast('⚠️ Repo is Private — scans must be in a Public repo so patients can view them. Change to Public in repo Settings.');
+      return;
+    }
+
+    // Step 2: ensure scans/ folder exists — create a .gitkeep if not
+    const scansFolderResp = await fetch(`https://api.github.com/repos/${cfg.owner}/${cfg.repo}/contents/scans`, {
+      headers: { 'Authorization': `Bearer ${cfg.token}`, 'Accept': 'application/vnd.github+json' }
+    });
+
+    if (!scansFolderResp.ok) {
+      // Create scans/.gitkeep to initialise the folder
+      const initResp = await fetch(`https://api.github.com/repos/${cfg.owner}/${cfg.repo}/contents/scans/.gitkeep`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${cfg.token}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/vnd.github+json'
+        },
+        body: JSON.stringify({
+          message: 'Initialise scans folder',
+          content: btoa(''),
+          branch: cfg.branch
+        })
+      });
+      if (!initResp.ok) {
+        const j = await initResp.json().catch(()=>({}));
+        toast(`⚠️ Could not create scans/ folder: ${j.message || initResp.status}`);
+        return;
+      }
+      toast('✅ Connected! Created scans/ folder — you are ready to upload.');
+    } else {
+      toast(`✅ Connection OK! Repo "${cfg.owner}/${cfg.repo}" is reachable and scans/ folder exists.`);
+    }
+
+  } catch(e) {
+    toast(`❌ Network error: ${e.message}. Check your internet connection.`);
+  } finally {
+    btn.textContent = orig;
+    btn.disabled = false;
+  }
+}
+
 function clearGitConfig() {
   localStorage.removeItem('ds_git_cfg');
   renderGitConfigState();
@@ -956,8 +1042,16 @@ async function generateLink() {
             `${Math.round(pct)}% · ${compKB} KB · File ${idx+1} of ${totalSlots}`));
 
       if (!resp.ok) {
-        const err = await resp.json().catch(()=>({}));
-        throw new Error(`${slotLabel}: ${err.message || 'HTTP ' + resp.status}`);
+        let ghMsg = '';
+        try { const j = await resp.json(); ghMsg = j.message || ''; } catch(e){}
+        const status = resp.status;
+        let hint = '';
+        if (status === 404) hint = 'Repository not found. Check that the repo name is correct and the token has "repo" scope.';
+        else if (status === 401) hint = 'Token rejected. It may have expired — generate a new Personal Access Token at github.com → Settings → Developer settings.';
+        else if (status === 422) hint = 'GitHub rejected the file. The repo may be empty — create a README.md in the repo first, then retry.';
+        else if (status === 409) hint = 'File conflict. Try uploading again.';
+        else if (status === 0)   hint = 'Request blocked (CORS or network). Make sure the repo is Public.';
+        throw new Error(`HTTP ${status}${ghMsg ? ' — ' + ghMsg : ''}. ${hint}`);
       }
       scanIds[slot] = scanId;
     }
@@ -1025,18 +1119,29 @@ function disableGenBtn(d) {
     : '<span id="gen-btn-icon">🔗</span> Generate & Upload Scan';
 }
 
-// Fetch wrapper that tracks upload progress
-function fetchWithProgress(url, opts, onProgress) {
-  if (!onProgress) return fetch(url, opts);
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open(opts.method || 'GET', url);
-    Object.entries(opts.headers || {}).forEach(([k,v]) => xhr.setRequestHeader(k,v));
-    xhr.upload.onprogress = e => { if (e.lengthComputable) onProgress(e.loaded/e.total*100); };
-    xhr.onload = () => resolve({ok: xhr.status>=200&&xhr.status<300, status:xhr.status, json:()=>Promise.resolve(JSON.parse(xhr.responseText))});
-    xhr.onerror = () => reject(new Error('Network error — check your connection'));
-    xhr.send(opts.body);
-  });
+// Upload using fetch() — XHR's onerror fires for CORS failures too,
+// making it impossible to distinguish from real network errors.
+// fetch() handles CORS correctly and works with GitHub's API from browsers.
+// We simulate upload progress with a timer since fetch() has no upload events.
+async function fetchWithProgress(url, opts, onProgress) {
+  if (onProgress) {
+    // Simulate progress: tick up to 90% while waiting, jump to 100% on completion
+    let pct = 0;
+    const interval = setInterval(() => {
+      pct = Math.min(pct + 3, 88);
+      onProgress(pct);
+    }, 200);
+    try {
+      const resp = await fetch(url, opts);
+      clearInterval(interval);
+      onProgress(100);
+      return resp;
+    } catch(e) {
+      clearInterval(interval);
+      throw e;
+    }
+  }
+  return fetch(url, opts);
 }
 
 function copyLink() {
