@@ -790,14 +790,22 @@ function switchPage(p) {
 //  GITHUB CONFIG
 // ══════════════════════════════════════
 function getGitCfg() {
-  try { return JSON.parse(localStorage.getItem('ds_git_cfg') || 'null'); } catch(e){return null;}
+  try {
+    const cfg = JSON.parse(localStorage.getItem('ds_git_cfg') || 'null');
+    if (cfg && cfg.token) cfg.token = cfg.token.trim(); // strip stray whitespace
+    return cfg;
+  } catch(e){return null;}
 }
 function saveGitConfig() {
   const owner  = document.getElementById('cfg-owner').value.trim();
   const repo   = document.getElementById('cfg-repo').value.trim();
-  const token  = document.getElementById('cfg-token').value.trim();
+  const token  = document.getElementById('cfg-token').value.trim(); // trim whitespace
   const branch = document.getElementById('cfg-branch').value.trim() || 'main';
   if (!owner || !repo || !token) { toast('Please fill in username, repository and token'); return; }
+  if (!token.startsWith('ghp_') && !token.startsWith('github_pat_') && !token.startsWith('gho_')) {
+    toast('⚠️ Token format looks wrong — GitHub tokens start with ghp_, github_pat_, or gho_');
+    // Still save it, just warn
+  }
   localStorage.setItem('ds_git_cfg', JSON.stringify({owner, repo, token, branch}));
   renderGitConfigState();
   validateForm();
@@ -1000,6 +1008,65 @@ async function generateLink() {
   const scanIds = {};
   const totalSlots = providedSlots.length;
 
+  // Pre-flight: verify token and repo are reachable before doing any compression
+  setProgress(true, 'Verifying GitHub connection…', 2, '');
+  try {
+    const testResp = await fetch(`https://api.github.com/repos/${cfg.owner}/${cfg.repo}`, {
+      headers: {
+        'Authorization': `Bearer ${cfg.token.trim()}`,
+        'Accept': 'application/vnd.github+json'
+      }
+    });
+    if (!testResp.ok) {
+      const j = await testResp.json().catch(()=>({}));
+      const status = testResp.status;
+      let msg = '';
+      if (status === 401) msg = 'Token is invalid or expired. Go to github.com → Settings → Developer settings → Tokens and generate a new one, then update it here.';
+      else if (status === 404) msg = `Repo "${cfg.owner}/${cfg.repo}" not found. Check the username and repo name are spelled correctly.`;
+      else msg = `GitHub returned HTTP ${status}: ${j.message || 'unknown error'}`;
+      setProgress(false);
+      disableGenBtn(false);
+      toast(`❌ ${msg}`);
+      return;
+    }
+    const repoData = await testResp.json().catch(()=>({}));
+    if (repoData.private) {
+      setProgress(false);
+      disableGenBtn(false);
+      toast('❌ The dental-scans repo is Private. Patients cannot view files from a private repo. Change it to Public in GitHub → Settings.');
+      return;
+    }
+
+    // Ensure scans/ folder exists — create it if not (empty repos cause 422 on first upload)
+    setProgress(true, 'Checking scans folder…', 4, '');
+    const folderResp = await fetch(`https://api.github.com/repos/${cfg.owner}/${cfg.repo}/contents/scans`, {
+      headers: { 'Authorization': `Bearer ${cfg.token.trim()}`, 'Accept': 'application/vnd.github+json' }
+    });
+    if (!folderResp.ok) {
+      // Create scans/.gitkeep to initialise folder
+      const initResp = await fetch(`https://api.github.com/repos/${cfg.owner}/${cfg.repo}/contents/scans/.gitkeep`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${cfg.token.trim()}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/vnd.github+json'
+        },
+        body: JSON.stringify({ message: 'Initialise scans folder', content: btoa(''), branch: cfg.branch })
+      });
+      if (!initResp.ok) {
+        const j = await initResp.json().catch(()=>({}));
+        setProgress(false); disableGenBtn(false);
+        toast(`❌ Could not create scans/ folder: ${j.message || initResp.status}. Make sure the repo has at least one file (e.g. a README.md).`);
+        return;
+      }
+    }
+  } catch(e) {
+    setProgress(false);
+    disableGenBtn(false);
+    toast(`❌ Cannot reach GitHub: ${e.message}. Check your internet connection.`);
+    return;
+  }
+
   try {
     for (let idx = 0; idx < providedSlots.length; idx++) {
       const slot = providedSlots[idx];
@@ -1012,8 +1079,14 @@ async function generateLink() {
       const compressed = pako.deflate(new Uint8Array(scanSlots[slot].buffer), {level:6});
       const b64content = uint8ToBase64(compressed);
       const compKB = (compressed.length/1024).toFixed(0);
+      const compMB = (compressed.length/1024/1024).toFixed(1);
 
-      setProgress(true, `Uploading ${slotLabel}…`, basePct + Math.round(10/totalSlots), `${compKB} KB · File ${idx+1} of ${totalSlots}`);
+      // GitHub Contents API limit is 100MB, but warn if very large
+      if (compressed.length > 80 * 1024 * 1024) {
+        throw new Error(`${slotLabel} file is too large (${compMB} MB compressed). GitHub's limit is ~100 MB.`);
+      }
+
+      setProgress(true, `Uploading ${slotLabel} (${compMB} MB)…`, basePct + Math.round(10/totalSlots), `Compressed ${compKB} KB · File ${idx+1} of ${totalSlots}`);
       await sleep(20);
 
       const ts    = Date.now().toString(36);
@@ -1033,8 +1106,7 @@ async function generateLink() {
         headers: {
           'Authorization': `Bearer ${cfg.token}`,
           'Content-Type':  'application/json',
-          'Accept':        'application/vnd.github+json',
-          'X-GitHub-Api-Version': '2022-11-28'
+          'Accept':        'application/vnd.github+json'
         },
         body: JSON.stringify(body)
       }, (pct) => setProgress(true, `Uploading ${slotLabel}…`,
@@ -1123,9 +1195,16 @@ function disableGenBtn(d) {
 // making it impossible to distinguish from real network errors.
 // fetch() handles CORS correctly and works with GitHub's API from browsers.
 // We simulate upload progress with a timer since fetch() has no upload events.
+// Upload using fetch() with proper error diagnosis
 async function fetchWithProgress(url, opts, onProgress) {
+  // Sanitize Authorization header — stray whitespace/newlines in a stored
+  // token make the header invalid and cause fetch() to throw "Failed to fetch"
+  // before the request even reaches the network.
+  if (opts && opts.headers && opts.headers['Authorization']) {
+    opts.headers['Authorization'] = opts.headers['Authorization'].trim();
+  }
+
   if (onProgress) {
-    // Simulate progress: tick up to 90% while waiting, jump to 100% on completion
     let pct = 0;
     const interval = setInterval(() => {
       pct = Math.min(pct + 3, 88);
@@ -1138,10 +1217,22 @@ async function fetchWithProgress(url, opts, onProgress) {
       return resp;
     } catch(e) {
       clearInterval(interval);
-      throw e;
+      // "Failed to fetch" is vague — add context
+      const token = (opts?.headers?.['Authorization'] || '');
+      if (!token || token === 'Bearer' || token === 'Bearer ') {
+        throw new Error('GitHub token is missing or empty. Please reconfigure GitHub storage.');
+      }
+      if (token.length < 20) {
+        throw new Error('GitHub token looks too short. Please reconfigure with a valid token.');
+      }
+      throw new Error(`Request to GitHub failed (${e.message}). Check: 1) internet is on, 2) dental-scans repo exists and is Public, 3) token has "repo" scope and is not expired.`);
     }
   }
-  return fetch(url, opts);
+  try {
+    return await fetch(url, opts);
+  } catch(e) {
+    throw new Error(`Request to GitHub failed (${e.message}). Check repo name, token, and internet connection.`);
+  }
 }
 
 function copyLink() {
